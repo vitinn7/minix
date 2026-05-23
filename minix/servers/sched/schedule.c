@@ -1,12 +1,4 @@
-/* This file contains the scheduling policy for SCHED
- *
- * The entry points are:
- *   do_noquantum:        Called on behalf of process' that run out of quantum
- *   do_start_scheduling  Request to start scheduling a proc
- *   do_stop_scheduling   Request to stop scheduling a proc
- *   do_nice		  Request to change the nice level on a proc
- *   init_scheduling      Called from main.c to set up/prepare scheduling
- */
+/* escalonamento por loteria */
 #include "sched.h"
 #include "schedproc.h"
 #include <assert.h>
@@ -39,11 +31,71 @@ static int schedule_process(struct schedproc * rmp, unsigned flags);
 #define cpu_is_available(c)	(cpu_proc[c] >= 0)
 
 #define DEFAULT_USER_TIME_SLICE 200
+#define LOTTERY_QUANTUM 100  /* quantum curto pra sortear com frequencia */
+#define DEFAULT_TICKETS 20
 
 /* processes created by RS are sysytem processes */
 #define is_system_proc(p)	((p)->parent == RS_PROC_NR)
 
 static unsigned cpu_proc[CONFIG_MAX_CPUS];
+
+/* gerador pseudo-aleatorio */
+static unsigned long lottery_seed = 12345;
+
+static unsigned long lottery_random(void)
+{
+	lottery_seed = lottery_seed * 1103515245 + 12345;
+	return (lottery_seed >> 16) & 0x7FFF;
+}
+
+/* sorteia um processo e da prioridade maxima pra ele */
+static void lottery_pick_winner(void)
+{
+	struct schedproc *rmp;
+	int proc_nr;
+	unsigned total_tickets = 0;
+	unsigned winner_ticket;
+	unsigned cumulative = 0;
+	int winner = -1;
+
+	/* soma bilhetes de processos */
+	for (proc_nr = 0, rmp = schedproc; proc_nr < NR_PROCS;
+	     proc_nr++, rmp++) {
+		if ((rmp->flags & IN_USE) && rmp->priority >= USER_Q
+		    && rmp->priority <= MIN_USER_Q) {
+			total_tickets += rmp->tickets;
+		}
+	}
+	if (total_tickets == 0) return;
+
+	winner_ticket = lottery_random() % total_tickets;
+
+	/* vencedor */
+	for (proc_nr = 0, rmp = schedproc; proc_nr < NR_PROCS;
+	     proc_nr++, rmp++) {
+		if ((rmp->flags & IN_USE) && rmp->priority >= USER_Q
+		    && rmp->priority <= MIN_USER_Q) {
+			cumulative += rmp->tickets;
+			if (cumulative > winner_ticket) {
+				winner = proc_nr;
+				break;
+			}
+		}
+	}
+
+	/* vencedor vai pra fila alta, resto pra fila baixa */
+	for (proc_nr = 0, rmp = schedproc; proc_nr < NR_PROCS;
+	     proc_nr++, rmp++) {
+		if ((rmp->flags & IN_USE) && rmp->priority >= USER_Q
+		    && rmp->priority <= MIN_USER_Q) {
+			if (proc_nr == winner)
+				rmp->priority = USER_Q;
+			else
+				rmp->priority = MIN_USER_Q;
+			schedule_process_local(rmp);
+		}
+	}
+}
 
 static void pick_cpu(struct schedproc * proc)
 {
@@ -87,7 +139,7 @@ static void pick_cpu(struct schedproc * proc)
 int do_noquantum(message *m_ptr)
 {
 	register struct schedproc *rmp;
-	int rv, proc_nr_n;
+	int proc_nr_n;
 
 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
@@ -96,13 +148,11 @@ int do_noquantum(message *m_ptr)
 	}
 
 	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q) {
-		rmp->priority += 1; /* lower priority */
-	}
+	rmp->time_slice = LOTTERY_QUANTUM;
 
-	if ((rv = schedule_process_local(rmp)) != OK) {
-		return rv;
-	}
+	/* sorteia quem roda agora */
+	lottery_pick_winner();
+
 	return OK;
 }
 
@@ -140,8 +190,8 @@ int do_stop_scheduling(message *m_ptr)
 int do_start_scheduling(message *m_ptr)
 {
 	register struct schedproc *rmp;
-	int rv, proc_nr_n, parent_nr_n;
-	
+	int rv, proc_nr_n;
+
 	/* we can handle two kinds of messages here */
 	assert(m_ptr->m_type == SCHEDULING_START || 
 		m_ptr->m_type == SCHEDULING_INHERIT);
@@ -165,21 +215,10 @@ int do_start_scheduling(message *m_ptr)
 		return EINVAL;
 	}
 
-	/* Inherit current priority and time slice from parent. Since there
-	 * is currently only one scheduler scheduling the whole system, this
-	 * value is local and we assert that the parent endpoint is valid */
+	/* caso especial: init e pai de si mesmo */
 	if (rmp->endpoint == rmp->parent) {
-		/* We have a special case here for init, which is the first
-		   process scheduled, and the parent of itself. */
 		rmp->priority   = USER_Q;
 		rmp->time_slice = DEFAULT_USER_TIME_SLICE;
-
-		/*
-		 * Since kernel never changes the cpu of a process, all are
-		 * started on the BSP and the userspace scheduling hasn't
-		 * changed that yet either, we can be sure that BSP is the
-		 * processor where the processes run now.
-		 */
 #ifdef CONFIG_SMP
 		rmp->cpu = machine.bsp_id;
 		/* FIXME set the cpu mask */
@@ -189,23 +228,15 @@ int do_start_scheduling(message *m_ptr)
 	switch (m_ptr->m_type) {
 
 	case SCHEDULING_START:
-		/* We have a special case here for system processes, for which
-		 * quanum and priority are set explicitly rather than inherited 
-		 * from the parent */
 		rmp->priority   = rmp->max_priority;
 		rmp->time_slice = m_ptr->m_lsys_sched_scheduling_start.quantum;
 		break;
 		
 	case SCHEDULING_INHERIT:
-		/* Inherit current priority and time slice from parent. Since there
-		 * is currently only one scheduler scheduling the whole system, this
-		 * value is local and we assert that the parent endpoint is valid */
-		if ((rv = sched_isokendpt(m_ptr->m_lsys_sched_scheduling_start.parent,
-				&parent_nr_n)) != OK)
-			return rv;
-
-		rmp->priority = schedproc[parent_nr_n].priority;
-		rmp->time_slice = schedproc[parent_nr_n].time_slice;
+		/* lottery: bilhetes iguais, quantum curto */
+		rmp->priority = USER_Q;
+		rmp->time_slice = LOTTERY_QUANTUM;
+		rmp->tickets = DEFAULT_TICKETS;
 		break;
 		
 	default: 
@@ -213,8 +244,6 @@ int do_start_scheduling(message *m_ptr)
 		assert(0);
 	}
 
-	/* Take over scheduling the process. The kernel reply message populates
-	 * the processes current priority and its time slice */
 	if ((rv = sys_schedctl(0, rmp->endpoint, 0, 0, 0)) != OK) {
 		printf("Sched: Error taking over scheduling for %d, kernel said %d\n",
 			rmp->endpoint, rv);
@@ -235,13 +264,6 @@ int do_start_scheduling(message *m_ptr)
 			rv);
 		return rv;
 	}
-
-	/* Mark ourselves as the new scheduler.
-	 * By default, processes are scheduled by the parents scheduler. In case
-	 * this scheduler would want to delegate scheduling to another
-	 * scheduler, it could do so and then write the endpoint of that
-	 * scheduler into the "scheduler" field.
-	 */
 
 	m_ptr->m_sched_lsys_scheduling_start.scheduler = SCHED_PROC_NR;
 
@@ -274,16 +296,12 @@ int do_nice(message *m_ptr)
 		return EINVAL;
 	}
 
-	/* Store old values, in case we need to roll back the changes */
 	old_q     = rmp->priority;
 	old_max_q = rmp->max_priority;
 
-	/* Update the proc entry and reschedule the process */
 	rmp->max_priority = rmp->priority = new_q;
 
 	if ((rv = schedule_process_local(rmp)) != OK) {
-		/* Something went wrong when rescheduling the process, roll
-		 * back the changes to proc struct */
 		rmp->priority     = old_q;
 		rmp->max_priority = old_max_q;
 	}
@@ -345,24 +363,10 @@ void init_scheduling(void)
  *				balance_queues				     *
  *===========================================================================*/
 
-/* This function in called every N ticks to rebalance the queues. The current
- * scheduler bumps processes down one priority when ever they run out of
- * quantum. This function will find all proccesses that have been bumped down,
- * and pulls them back up. This default policy will soon be changed.
- */
+/* lottery nao rebalanceia, o sorteio ja decide tudo */
 void balance_queues(void)
 {
-	struct schedproc *rmp;
-	int r, proc_nr;
-
-	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
-		if (rmp->flags & IN_USE) {
-			if (rmp->priority > rmp->max_priority) {
-				rmp->priority -= 1; /* increase priority */
-				schedule_process_local(rmp);
-			}
-		}
-	}
+	int r;
 
 	if ((r = sys_setalarm(balance_timeout, 0)) != OK)
 		panic("sys_setalarm failed: %d", r);
