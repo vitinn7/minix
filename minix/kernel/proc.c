@@ -1606,7 +1606,7 @@ void enqueue(
  */
   int q = rp->p_priority;	 		/* scheduling queue to use */
   struct proc **rdy_head, **rdy_tail;
-  
+
   assert(proc_is_runnable(rp));
 
   assert(q >= 0);
@@ -1727,7 +1727,6 @@ void dequeue(struct proc *rp)
   struct proc **xpp;			/* iterate over queue */
   struct proc *prev_xp;
   u64_t tsc, tsc_delta;
-
   struct proc **rdy_tail;
 
   assert(proc_ptr_ok(rp));
@@ -1805,7 +1804,7 @@ static struct proc * pick_proc(void)
 		continue;
 	}
 	assert(proc_is_runnable(rp));
-	if (priv(rp)->s_flags & BILLABLE)	 	
+	if (priv(rp)->s_flags & BILLABLE)
 		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
 	return rp;
   }
