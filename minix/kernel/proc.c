@@ -1606,10 +1606,15 @@ void enqueue(
  */
   int q = rp->p_priority;	 		/* scheduling queue to use */
   struct proc **rdy_head, **rdy_tail;
-  
+
   assert(proc_is_runnable(rp));
 
   assert(q >= 0);
+
+#if DEBUG_SCHED_LOG
+  kprintf("SCHED_LOG: enqueue %d (%s) fila %d\n",
+      rp->p_endpoint, rp->p_name, q);
+#endif
 
   rdy_head = get_cpu_var(rp->p_cpu, run_q_head);
   rdy_tail = get_cpu_var(rp->p_cpu, run_q_tail);
@@ -1727,8 +1732,12 @@ void dequeue(struct proc *rp)
   struct proc **xpp;			/* iterate over queue */
   struct proc *prev_xp;
   u64_t tsc, tsc_delta;
-
   struct proc **rdy_tail;
+
+#if DEBUG_SCHED_LOG
+  kprintf("SCHED_LOG: dequeue %d (%s) fila %d\n",
+      rp->p_endpoint, rp->p_name, q);
+#endif
 
   assert(proc_ptr_ok(rp));
   assert(!proc_is_runnable(rp));
@@ -1805,8 +1814,12 @@ static struct proc * pick_proc(void)
 		continue;
 	}
 	assert(proc_is_runnable(rp));
-	if (priv(rp)->s_flags & BILLABLE)	 	
+	if (priv(rp)->s_flags & BILLABLE)
 		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
+#if DEBUG_SCHED_LOG
+	kprintf("SCHED_LOG: pick_proc %d (%s) fila %d\n",
+	    rp->p_endpoint, rp->p_name, q);
+#endif
 	return rp;
   }
   return NULL;

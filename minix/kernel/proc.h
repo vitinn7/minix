@@ -1,6 +1,9 @@
 #ifndef PROC_H
 #define PROC_H
 
+/* ligar pra ver logs de escalonamento no console */
+#define DEBUG_SCHED_LOG 0
+
 #include <minix/const.h>
 #include <sys/cdefs.h>
 

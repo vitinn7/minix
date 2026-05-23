@@ -1,12 +1,4 @@
-/* This file contains the scheduling policy for SCHED
- *
- * The entry points are:
- *   do_noquantum:        Called on behalf of process' that run out of quantum
- *   do_start_scheduling  Request to start scheduling a proc
- *   do_stop_scheduling   Request to stop scheduling a proc
- *   do_nice		  Request to change the nice level on a proc
- *   init_scheduling      Called from main.c to set up/prepare scheduling
- */
+/* escalonamento FCFS (first-come, first-served) */
 #include "sched.h"
 #include "schedproc.h"
 #include <assert.h>
@@ -39,6 +31,7 @@ static int schedule_process(struct schedproc * rmp, unsigned flags);
 #define cpu_is_available(c)	(cpu_proc[c] >= 0)
 
 #define DEFAULT_USER_TIME_SLICE 200
+#define FCFS_QUANTUM 50000  /* quantum grande pra nao preemptar */
 
 /* processes created by RS are sysytem processes */
 #define is_system_proc(p)	((p)->parent == RS_PROC_NR)
@@ -96,9 +89,9 @@ int do_noquantum(message *m_ptr)
 	}
 
 	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q) {
-		rmp->priority += 1; /* lower priority */
-	}
+	/* fcfs: nao rebaixa prioridade, mantem todos na mesma fila */
+	rmp->priority = USER_Q;
+	rmp->time_slice = FCFS_QUANTUM;
 
 	if ((rv = schedule_process_local(rmp)) != OK) {
 		return rv;
@@ -140,7 +133,7 @@ int do_stop_scheduling(message *m_ptr)
 int do_start_scheduling(message *m_ptr)
 {
 	register struct schedproc *rmp;
-	int rv, proc_nr_n, parent_nr_n;
+	int rv, proc_nr_n;
 	
 	/* we can handle two kinds of messages here */
 	assert(m_ptr->m_type == SCHEDULING_START || 
@@ -165,21 +158,10 @@ int do_start_scheduling(message *m_ptr)
 		return EINVAL;
 	}
 
-	/* Inherit current priority and time slice from parent. Since there
-	 * is currently only one scheduler scheduling the whole system, this
-	 * value is local and we assert that the parent endpoint is valid */
+	/* caso especial: init e pai de si mesmo */
 	if (rmp->endpoint == rmp->parent) {
-		/* We have a special case here for init, which is the first
-		   process scheduled, and the parent of itself. */
 		rmp->priority   = USER_Q;
 		rmp->time_slice = DEFAULT_USER_TIME_SLICE;
-
-		/*
-		 * Since kernel never changes the cpu of a process, all are
-		 * started on the BSP and the userspace scheduling hasn't
-		 * changed that yet either, we can be sure that BSP is the
-		 * processor where the processes run now.
-		 */
 #ifdef CONFIG_SMP
 		rmp->cpu = machine.bsp_id;
 		/* FIXME set the cpu mask */
@@ -189,23 +171,15 @@ int do_start_scheduling(message *m_ptr)
 	switch (m_ptr->m_type) {
 
 	case SCHEDULING_START:
-		/* We have a special case here for system processes, for which
-		 * quanum and priority are set explicitly rather than inherited 
-		 * from the parent */
+		/* processos de sistema mantem comportamento original */
 		rmp->priority   = rmp->max_priority;
 		rmp->time_slice = m_ptr->m_lsys_sched_scheduling_start.quantum;
 		break;
 		
 	case SCHEDULING_INHERIT:
-		/* Inherit current priority and time slice from parent. Since there
-		 * is currently only one scheduler scheduling the whole system, this
-		 * value is local and we assert that the parent endpoint is valid */
-		if ((rv = sched_isokendpt(m_ptr->m_lsys_sched_scheduling_start.parent,
-				&parent_nr_n)) != OK)
-			return rv;
-
-		rmp->priority = schedproc[parent_nr_n].priority;
-		rmp->time_slice = schedproc[parent_nr_n].time_slice;
+		/* fcfs: todos na mesma fila com quantum grande */
+		rmp->priority = USER_Q;
+		rmp->time_slice = FCFS_QUANTUM;
 		break;
 		
 	default: 
@@ -213,8 +187,7 @@ int do_start_scheduling(message *m_ptr)
 		assert(0);
 	}
 
-	/* Take over scheduling the process. The kernel reply message populates
-	 * the processes current priority and its time slice */
+	/* assume o escalonamento do processo */
 	if ((rv = sys_schedctl(0, rmp->endpoint, 0, 0, 0)) != OK) {
 		printf("Sched: Error taking over scheduling for %d, kernel said %d\n",
 			rmp->endpoint, rv);
@@ -235,13 +208,6 @@ int do_start_scheduling(message *m_ptr)
 			rv);
 		return rv;
 	}
-
-	/* Mark ourselves as the new scheduler.
-	 * By default, processes are scheduled by the parents scheduler. In case
-	 * this scheduler would want to delegate scheduling to another
-	 * scheduler, it could do so and then write the endpoint of that
-	 * scheduler into the "scheduler" field.
-	 */
 
 	m_ptr->m_sched_lsys_scheduling_start.scheduler = SCHED_PROC_NR;
 
@@ -274,16 +240,12 @@ int do_nice(message *m_ptr)
 		return EINVAL;
 	}
 
-	/* Store old values, in case we need to roll back the changes */
 	old_q     = rmp->priority;
 	old_max_q = rmp->max_priority;
 
-	/* Update the proc entry and reschedule the process */
 	rmp->max_priority = rmp->priority = new_q;
 
 	if ((rv = schedule_process_local(rmp)) != OK) {
-		/* Something went wrong when rescheduling the process, roll
-		 * back the changes to proc struct */
 		rmp->priority     = old_q;
 		rmp->max_priority = old_max_q;
 	}
@@ -345,24 +307,10 @@ void init_scheduling(void)
  *				balance_queues				     *
  *===========================================================================*/
 
-/* This function in called every N ticks to rebalance the queues. The current
- * scheduler bumps processes down one priority when ever they run out of
- * quantum. This function will find all proccesses that have been bumped down,
- * and pulls them back up. This default policy will soon be changed.
- */
+/* fcfs nao precisa rebalancear, so renova o alarme */
 void balance_queues(void)
 {
-	struct schedproc *rmp;
-	int r, proc_nr;
-
-	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
-		if (rmp->flags & IN_USE) {
-			if (rmp->priority > rmp->max_priority) {
-				rmp->priority -= 1; /* increase priority */
-				schedule_process_local(rmp);
-			}
-		}
-	}
+	int r;
 
 	if ((r = sys_setalarm(balance_timeout, 0)) != OK)
 		panic("sys_setalarm failed: %d", r);
