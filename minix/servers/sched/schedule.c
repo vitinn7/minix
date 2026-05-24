@@ -1,4 +1,4 @@
-/* escalonamento SJF (shortest job first) nao preemptivo */
+/* escalonamento SJF nao preemptivo */
 #include "sched.h"
 #include "schedproc.h"
 #include <assert.h>
@@ -163,7 +163,6 @@ int do_start_scheduling(message *m_ptr)
 	if (!accept_message(m_ptr))
 		return EPERM;
 
-	/* Resolve endpoint to proc slot. */
 	if ((rv = sched_isemtyendpt(m_ptr->m_lsys_sched_scheduling_start.endpoint,
 			&proc_nr_n)) != OK) {
 		return rv;
@@ -177,8 +176,6 @@ int do_start_scheduling(message *m_ptr)
 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
 		return EINVAL;
 	}
-
-	/* caso especial: init e pai de si mesmo */
 	if (rmp->endpoint == rmp->parent) {
 		rmp->priority   = USER_Q;
 		rmp->time_slice = DEFAULT_USER_TIME_SLICE;
@@ -191,13 +188,12 @@ int do_start_scheduling(message *m_ptr)
 	switch (m_ptr->m_type) {
 
 	case SCHEDULING_START:
-		/* processos de sistema mantem comportamento original */
 		rmp->priority   = rmp->max_priority;
 		rmp->time_slice = m_ptr->m_lsys_sched_scheduling_start.quantum;
 		break;
 		
 	case SCHEDULING_INHERIT:
-		/* sjf: começa com prioridade padrao, kernel vai classificar depois */
+		/* sjf: prioridade padrao ate o primeiro quantum, depois reclassifica */
 		rmp->priority = USER_Q;
 		rmp->time_slice = SJF_QUANTUM;
 		rmp->ipc_count = 0;
@@ -209,7 +205,6 @@ int do_start_scheduling(message *m_ptr)
 		assert(0);
 	}
 
-	/* assume o escalonamento do processo */
 	if ((rv = sys_schedctl(0, rmp->endpoint, 0, 0, 0)) != OK) {
 		printf("Sched: Error taking over scheduling for %d, kernel said %d\n",
 			rmp->endpoint, rv);
