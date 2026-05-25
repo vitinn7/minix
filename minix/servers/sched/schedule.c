@@ -1,4 +1,4 @@
-/* escalonamento SJF nao preemptivo */
+/* escalonamento SPN (Shortest Process Next) - preemptivo, interativo */
 #include "sched.h"
 #include "schedproc.h"
 #include <assert.h>
@@ -31,7 +31,7 @@ static int schedule_process(struct schedproc * rmp, unsigned flags);
 #define cpu_is_available(c)	(cpu_proc[c] >= 0)
 
 #define DEFAULT_USER_TIME_SLICE 200
-#define SJF_QUANTUM 50000  /* quantum grande pra nao preemptar */
+#define SPN_QUANTUM 200  /* quantum igual ao padrao, permite classificacao frequente */
 
 /* processes created by RS are sysytem processes */
 #define is_system_proc(p)	((p)->parent == RS_PROC_NR)
@@ -90,12 +90,12 @@ int do_noquantum(message *m_ptr)
 
 	rmp = &schedproc[proc_nr_n];
 
-	/* acumula estatisticas de ipc do kernel */
+	/* spn: acumula estatisticas de ipc do kernel */
 	rmp->ipc_count += m_ptr->m_krn_lsys_schedule.acnt_ipc_sync
 	                + m_ptr->m_krn_lsys_schedule.acnt_ipc_async;
 	rmp->cpu_bursts += 1;
 
-	/* classifica pela razao ipc/bursts: mais ipc = job curto = prioridade alta */
+	/* spn: classifica pela razao ipc/bursts - mais ipc = burst curto = prioridade alta */
 	{
 		unsigned ratio = 0;
 		if (rmp->cpu_bursts > 0)
@@ -111,7 +111,7 @@ int do_noquantum(message *m_ptr)
 			rmp->priority = MIN_USER_Q - 1;
 	}
 
-	rmp->time_slice = SJF_QUANTUM;
+	rmp->time_slice = SPN_QUANTUM;
 
 	if ((rv = schedule_process_local(rmp)) != OK) {
 		return rv;
@@ -193,9 +193,9 @@ int do_start_scheduling(message *m_ptr)
 		break;
 		
 	case SCHEDULING_INHERIT:
-		/* sjf: prioridade padrao ate o primeiro quantum, depois reclassifica */
+		/* spn: prioridade padrao, reclassifica a cada quantum via ratio ipc */
 		rmp->priority = USER_Q;
-		rmp->time_slice = SJF_QUANTUM;
+		rmp->time_slice = SPN_QUANTUM;
 		rmp->ipc_count = 0;
 		rmp->cpu_bursts = 0;
 		break;
@@ -324,7 +324,7 @@ void init_scheduling(void)
  *				balance_queues				     *
  *===========================================================================*/
 
-/* sjf nao rebalanceia, a prioridade e definida pelo ratio de ipc */
+/* spn nao rebalanceia, a prioridade e definida pelo ratio de ipc */
 void balance_queues(void)
 {
 	int r;
