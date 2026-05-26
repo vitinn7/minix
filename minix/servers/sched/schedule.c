@@ -31,7 +31,7 @@ static int schedule_process(struct schedproc * rmp, unsigned flags);
 #define cpu_is_available(c)	(cpu_proc[c] >= 0)
 
 #define DEFAULT_USER_TIME_SLICE 200
-#define SPN_QUANTUM 200  /* quantum igual ao padrao, permite classificacao frequente */
+#define SPN_QUANTUM 30  /* quantum curto para classificacao frequente de cpu-bound */
 
 /* processes created by RS are sysytem processes */
 #define is_system_proc(p)	((p)->parent == RS_PROC_NR)
@@ -90,25 +90,23 @@ int do_noquantum(message *m_ptr)
 
 	rmp = &schedproc[proc_nr_n];
 
-	/* spn: acumula estatisticas de ipc do kernel */
-	rmp->ipc_count += m_ptr->m_krn_lsys_schedule.acnt_ipc_sync
-	                + m_ptr->m_krn_lsys_schedule.acnt_ipc_async;
-	rmp->cpu_bursts += 1;
-
-	/* spn: classifica pela razao ipc/bursts - mais ipc = burst curto = prioridade alta */
+	/* spn: media exponencial das chamadas ipc por quantum
+	 * 75% peso no burst atual, 25% no historico.
+	 * responde rapido a mudancas de comportamento do processo. */
 	{
-		unsigned ratio = 0;
-		if (rmp->cpu_bursts > 0)
-			ratio = rmp->ipc_count / rmp->cpu_bursts;
+		unsigned ipc_now = m_ptr->m_krn_lsys_schedule.acnt_ipc_sync
+		                 + m_ptr->m_krn_lsys_schedule.acnt_ipc_async;
 
-		if (ratio > 50)
-			rmp->priority = USER_Q;
-		else if (ratio > 10)
-			rmp->priority = USER_Q + 2;
-		else if (ratio > 0)
-			rmp->priority = USER_Q + 4;
+		rmp->ipc_avg = (ipc_now * 3 + rmp->ipc_avg) / 4;
+
+		if (rmp->ipc_avg > 50)
+			rmp->priority = USER_Q;         /* io-bound: fila 7 */
+		else if (rmp->ipc_avg > 10)
+			rmp->priority = USER_Q + 2;     /* misto alto: fila 9 */
+		else if (rmp->ipc_avg > 0)
+			rmp->priority = USER_Q + 4;     /* misto baixo: fila 11 */
 		else
-			rmp->priority = MIN_USER_Q - 1;
+			rmp->priority = MIN_USER_Q;     /* cpu-bound puro: fila 14 */
 	}
 
 	rmp->time_slice = SPN_QUANTUM;
@@ -193,11 +191,10 @@ int do_start_scheduling(message *m_ptr)
 		break;
 		
 	case SCHEDULING_INHERIT:
-		/* spn: prioridade padrao, reclassifica a cada quantum via ratio ipc */
-		rmp->priority = USER_Q;
+		/* spn: prioridade intermediaria inicial, reclassifica via ipc_avg */
+		rmp->priority = USER_Q + 3;
 		rmp->time_slice = SPN_QUANTUM;
-		rmp->ipc_count = 0;
-		rmp->cpu_bursts = 0;
+		rmp->ipc_avg = 0;
 		break;
 		
 	default: 

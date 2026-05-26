@@ -34,8 +34,7 @@ EXTERN struct schedproc {
 								process allowed
 								to run on */
 	/* spn */
-	unsigned ipc_count;	/* chamadas ipc acumuladas */
-	unsigned cpu_bursts;	/* vezes que esgotou quantum */
+	unsigned ipc_avg;	/* media exponencial de chamadas ipc por quantum */
 } schedproc[NR_PROCS];
 
 /* Flag values */
